@@ -12,7 +12,6 @@ import {
   input,
   output,
   viewChild,
-  ViewContainerRef,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatCalendar, MatCalendarView } from '@angular/material/datepicker';
@@ -91,7 +90,6 @@ export class DateTimePickerComponent implements AfterViewInit {
   private _dateService = inject(DateService);
   private _globalConfigService = inject(GlobalConfigService);
   private readonly _cdr = inject(ChangeDetectorRef);
-  private readonly _viewContainerRef = inject(ViewContainerRef);
   private _el = inject(ElementRef);
   private readonly _isElectron = inject(IS_ELECTRON_TOKEN);
   private readonly _isAndroidWebView = inject(IS_ANDROID_WEB_VIEW_TOKEN);
@@ -127,20 +125,32 @@ export class DateTimePickerComponent implements AfterViewInit {
     () => this._globalConfigService.localization() !== undefined,
   );
 
-  // Week numbers for the calendar rows
+  // Week numbers are only meaningful beside the month grid. Year and
+  // multi-year views use the same Material table classes for months/years.
   weekNumbers: number[] = [];
+  calendarView: MatCalendarView = 'month';
 
   private _lastView: MatCalendarView | null = null;
   private _viewChangeEffect = effect((onCleanup) => {
     const cal = this.calendar();
     if (cal) {
       this._lastView = cal.currentView;
+      this.calendarView = cal.currentView;
+      setTimeout(() => this._renderWeekNumbers(cal));
+
       const sub = cal.stateChanges.subscribe(() => {
-        if (cal.currentView !== this._lastView) {
-          this._lastView = cal.currentView;
+        const viewChanged = cal.currentView !== this._lastView;
+        this._lastView = cal.currentView;
+        this.calendarView = cal.currentView;
+        if (viewChanged) {
           this.isInitialFocus = true;
-          this._cdr.markForCheck();
         }
+
+        // Material emits stateChanges before the new month rows have finished
+        // rendering. Recompute on the next task rather than observing private
+        // DOM mutations for the lifetime of the component.
+        setTimeout(() => this._renderWeekNumbers(cal));
+        this._cdr.markForCheck();
       });
       onCleanup(() => sub.unsubscribe());
     }
@@ -296,37 +306,40 @@ export class DateTimePickerComponent implements AfterViewInit {
     this.quickAccessClick.emit(val);
   }
 
-  // Calculate and render week numbers for the calendar
-  private renderWeekNumbers(): void {
+  // Calculate week numbers from MatCalendar's actual month state. Do not parse
+  // aria-label text: those labels are localized and are an accessibility API,
+  // not a stable machine-readable date format.
+  private _renderWeekNumbers(cal: MatCalendar<Date>): void {
+    if (cal.currentView !== 'month') {
+      this.weekNumbers = [];
+      this._cdr.markForCheck();
+      return;
+    }
+
     const calendarEl = this._el.nativeElement.querySelector(
       '.mat-calendar',
-    ) as HTMLElement;
-    if (!calendarEl) return;
+    ) as HTMLElement | null;
+    const rowCount = calendarEl?.querySelectorAll('.mat-calendar-body tr').length ?? 0;
+    if (rowCount === 0) {
+      this.weekNumbers = [];
+      return;
+    }
 
     const firstDayOfWeek = this.getFirstDayOfWeek();
+    const monthStart = new Date(
+      cal.activeDate.getFullYear(),
+      cal.activeDate.getMonth(),
+      1,
+    );
+    const leadingDays = (monthStart.getDay() - firstDayOfWeek + 7) % 7;
+    const firstVisibleDate = new Date(monthStart);
+    firstVisibleDate.setDate(monthStart.getDate() - leadingDays);
 
-    // Get all week rows (each week is a row in the calendar body)
-    const weekRows = calendarEl.querySelectorAll('.mat-calendar-body tr');
-    if (weekRows.length === 0) return;
-
-    // Calculate week numbers for each row
-    const newWeekNumbers: number[] = [];
-    weekRows.forEach((row) => {
-      // Find the first date cell in this row (use first cell, not excluding disabled)
-      const firstDateCell = row.querySelector('.mat-calendar-body-cell');
-      if (firstDateCell) {
-        const dateStr = (firstDateCell as HTMLElement).getAttribute('aria-label');
-        if (dateStr) {
-          // Parse the date from the aria-label (format: "Month day, year", e.g., "September 1, 2024")
-          const date = new Date(dateStr);
-          if (!isNaN(date.getTime())) {
-            newWeekNumbers.push(getWeekNumber(date, firstDayOfWeek));
-          }
-        }
-      }
+    this.weekNumbers = Array.from({ length: rowCount }, (_, index) => {
+      const weekStart = new Date(firstVisibleDate);
+      weekStart.setDate(firstVisibleDate.getDate() + index * 7);
+      return getWeekNumber(weekStart, firstDayOfWeek);
     });
-
-    this.weekNumbers = newWeekNumbers;
     this._cdr.markForCheck();
   }
 
@@ -346,24 +359,6 @@ export class DateTimePickerComponent implements AfterViewInit {
       ) as HTMLElement;
       if (activeCell) {
         activeCell.focus();
-      }
-      // Render week numbers after the calendar is rendered
-      setTimeout(() => this.renderWeekNumbers(), 100);
-
-      // Set up a MutationObserver to detect when the calendar view changes
-      const calendarEl = this._el.nativeElement.querySelector('.mat-calendar');
-      if (calendarEl) {
-        const observer = new MutationObserver(() => {
-          this.renderWeekNumbers();
-        });
-        observer.observe(calendarEl, {
-          childList: true,
-          subtree: true,
-          attributes: true,
-          attributeFilter: ['class'],
-        });
-        // Store the observer to disconnect later if needed
-        (this as any)._weekNumberObserver = observer;
       }
     }, 50);
   }
