@@ -83,6 +83,18 @@ connection uses `postgres:5432`; existing installs that already set
 > against unapplied migrations. Use `./scripts/deploy.sh` for production
 > updates, or `./scripts/deploy.sh --build` for local image builds.
 
+> **Troubleshooting custom Postgres healthchecks:** `pg_isready -U <user>`
+> probes a database named after `<user>` unless `-d <database>` is supplied.
+> If your `POSTGRES_USER` and `POSTGRES_DB` differ, a healthcheck such as
+> `pg_isready -U supersync` can therefore log
+> `FATAL: database "supersync" does not exist` even while the application is
+> correctly configured for another database. Use
+> `pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"` (plus `-h` when needed).
+> Treat missing-column errors separately: messages such as
+> `column ... does not exist` indicate unapplied schema migrations, not a
+> healthcheck database-name mismatch. Run the deployment migration path above
+> before restarting the newer server image.
+
 `deploy.sh` verifies that the pulled/built `supersync` image has an
 `org.opencontainers.image.revision` label matching the latest commit that
 affects the SuperSync image inputs. This prevents host deploy scripts from
