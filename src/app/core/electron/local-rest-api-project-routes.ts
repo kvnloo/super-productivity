@@ -243,10 +243,9 @@ const handleDeleteProject = async (
     return projectNotFound(requestId);
   }
 
-  // ProjectService.remove() deletes the project's tasks with it (backlog and
-  // subtasks included), exactly as the UI's own "Delete project" does. If the
-  // deleted project is the one on screen, the active context falls back to
-  // Today.
+  // ProjectService.remove() uses the UI's full delete cascade: regular/backlog
+  // tasks, subtasks, and project notes are deleted. If the deleted project is
+  // the one on screen, the active context falls back to Today.
   await deps.projectService.remove(project);
   return createSuccessResponse(requestId, 200, { id: projectId, deleted: true });
 };
