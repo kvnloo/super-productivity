@@ -285,6 +285,58 @@ describe('Duplicate Operation Pre-check', () => {
       }
     });
 
+    it('should safely reconcile a same-id resend after a successful response is lost', async () => {
+      const op = createTestOp({
+        id: 'lost-ack-op',
+        entityId: 'task-lost-ack',
+        vectorClock: { 'client-1': 1 },
+        payload: { title: 'one durable mutation' },
+      });
+
+      // Simulate the server committing the mutation and the response being lost:
+      // the client receives no usable acknowledgement, so the first result is
+      // deliberately discarded.
+      await syncService.uploadOps(1, 'client-1', [op]);
+
+      // Re-sending the *identical logical mutation* is safe. Durable operation
+      // identity turns the ambiguous outcome into a duplicate observation
+      // instead of applying the effect twice.
+      const resend = await syncService.uploadOps(1, 'client-1', [op]);
+      expect(resend[0]).toMatchObject({
+        accepted: false,
+        errorCode: SYNC_ERROR_CODES.DUPLICATE_OPERATION,
+      });
+      expect(resend[0].serverSeq).toBeUndefined();
+
+      // The safety property depends on identity + content being frozen. Reusing
+      // the id for different content is a collision, never an idempotent resend.
+      const changedContent = await syncService.uploadOps(1, 'client-1', [
+        createTestOp({
+          id: 'lost-ack-op',
+          entityId: 'task-lost-ack',
+          vectorClock: { 'client-1': 1 },
+          payload: { title: 'different mutation' },
+        }),
+      ]);
+      expect(changedContent[0]).toMatchObject({
+        accepted: false,
+        errorCode: SYNC_ERROR_CODES.INVALID_OP_ID,
+      });
+
+      // Neither reconciliation attempt consumes another durable sequence slot.
+      const next = await syncService.uploadOps(1, 'client-1', [
+        createTestOp({
+          id: 'after-lost-ack',
+          entityId: 'task-after-lost-ack',
+          vectorClock: { 'client-1': 2 },
+        }),
+      ]);
+      expect(next[0]).toMatchObject({
+        accepted: true,
+        serverSeq: 2,
+      });
+    });
+
     it('should not advance server sequence for duplicate retries', async () => {
       const originalOp = createTestOp({
         id: 'seq-original',
