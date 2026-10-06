@@ -43,6 +43,8 @@ import { fadeAnimation } from '../animations/fade.ani';
 import { getClockStringFromHours } from '../../util/get-clock-string-from-hours';
 import { IS_ELECTRON_TOKEN } from '../../app.constants';
 import { IS_ANDROID_WEB_VIEW_TOKEN } from '../../util/is-android-web-view';
+import { getWeekNumber } from '../../util/get-week-number';
+import { DEFAULT_FIRST_DAY_OF_WEEK } from '../../core/locale.constants';
 
 const DEFAULT_TIME = '09:00';
 
@@ -123,17 +125,32 @@ export class DateTimePickerComponent implements AfterViewInit {
     () => this._globalConfigService.localization() !== undefined,
   );
 
+  // Week numbers are only meaningful beside the month grid. Year and
+  // multi-year views use the same Material table classes for months/years.
+  weekNumbers: number[] = [];
+  calendarView: MatCalendarView = 'month';
+
   private _lastView: MatCalendarView | null = null;
   private _viewChangeEffect = effect((onCleanup) => {
     const cal = this.calendar();
     if (cal) {
       this._lastView = cal.currentView;
+      this.calendarView = cal.currentView;
+      setTimeout(() => this._renderWeekNumbers(cal));
+
       const sub = cal.stateChanges.subscribe(() => {
-        if (cal.currentView !== this._lastView) {
-          this._lastView = cal.currentView;
+        const viewChanged = cal.currentView !== this._lastView;
+        this._lastView = cal.currentView;
+        this.calendarView = cal.currentView;
+        if (viewChanged) {
           this.isInitialFocus = true;
-          this._cdr.markForCheck();
         }
+
+        // Material emits stateChanges before the new month rows have finished
+        // rendering. Recompute on the next task rather than observing private
+        // DOM mutations for the lifetime of the component.
+        setTimeout(() => this._renderWeekNumbers(cal));
+        this._cdr.markForCheck();
       });
       onCleanup(() => sub.unsubscribe());
     }
@@ -287,6 +304,49 @@ export class DateTimePickerComponent implements AfterViewInit {
   quickAccessBtnClick(ev: MouseEvent, val: QuickAccessId): void {
     ev.preventDefault();
     this.quickAccessClick.emit(val);
+  }
+
+  // Calculate week numbers from MatCalendar's actual month state. Do not parse
+  // aria-label text: those labels are localized and are an accessibility API,
+  // not a stable machine-readable date format.
+  private _renderWeekNumbers(cal: MatCalendar<Date>): void {
+    if (cal.currentView !== 'month') {
+      this.weekNumbers = [];
+      this._cdr.markForCheck();
+      return;
+    }
+
+    const calendarEl = this._el.nativeElement.querySelector(
+      '.mat-calendar',
+    ) as HTMLElement | null;
+    const rowCount = calendarEl?.querySelectorAll('.mat-calendar-body tr').length ?? 0;
+    if (rowCount === 0) {
+      this.weekNumbers = [];
+      return;
+    }
+
+    const firstDayOfWeek = this.getFirstDayOfWeek();
+    const monthStart = new Date(
+      cal.activeDate.getFullYear(),
+      cal.activeDate.getMonth(),
+      1,
+    );
+    const leadingDays = (monthStart.getDay() - firstDayOfWeek + 7) % 7;
+    const firstVisibleDate = new Date(monthStart);
+    firstVisibleDate.setDate(monthStart.getDate() - leadingDays);
+
+    this.weekNumbers = Array.from({ length: rowCount }, (_, index) => {
+      const weekStart = new Date(firstVisibleDate);
+      weekStart.setDate(firstVisibleDate.getDate() + index * 7);
+      return getWeekNumber(weekStart, firstDayOfWeek);
+    });
+    this._cdr.markForCheck();
+  }
+
+  // Get the first day of week from config or default
+  private getFirstDayOfWeek(): number {
+    const cfg = this._globalConfigService.localization()?.firstDayOfWeek;
+    return cfg !== null && cfg !== undefined ? cfg : DEFAULT_FIRST_DAY_OF_WEEK;
   }
 
   private _lastMouseCoords: { x: number; y: number } | null = null;
